@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use expectations::FunctionExpectEntry;
-use wasmparser::{self, TypeRef};
+use wasmparser::{self, CompositeInnerType, TypeRef};
 
 mod expectations;
 
@@ -44,6 +44,14 @@ struct FuncInfo<'a> {
 	ret: Option<wasmparser::ValType>,
 }
 
+fn func_info_at(func_types: &HashMap<u32, wasmparser::FuncType>, type_idx: u32) -> Option<FuncInfo<'_>> {
+	let ft = func_types.get(&type_idx)?;
+	Some(FuncInfo {
+		params: ft.params(),
+		ret: ft.results().first().copied(),
+	})
+}
+
 fn str_to_val_type(s: &str) -> Option<wasmparser::ValType> {
 	match s {
 		"i32" => Some(wasmparser::ValType::I32),
@@ -59,7 +67,8 @@ fn _validate_wasm(wasm_bytes: &[u8], expect_json: &str) -> Result<(), WatParserE
 
 
 	let mut func_type_indexes: Vec<u32> = Vec::new();
-	let mut func_types: Vec<wasmparser::FuncType> = Vec::new();
+	let mut func_types: HashMap<u32, wasmparser::FuncType> = HashMap::new();
+	let mut next_type_idx: u32 = 0;
 	let mut exports: Vec<wasmparser::Export> = Vec::new();
 	let mut imports: Vec<wasmparser::Import> = Vec::new();
 	let mut has_exported_memory = false;
@@ -95,9 +104,11 @@ fn _validate_wasm(wasm_bytes: &[u8], expect_json: &str) -> Result<(), WatParserE
 			wasmparser::Payload::TypeSection(reader) => {
 				for typ in reader {
 					if let Ok(typ) = typ {
-						let typs = typ.into_types();
-						for t in typs {
-							func_types.push(t.unwrap_func().clone());
+						for t in typ.into_types() {
+							if let CompositeInnerType::Func(ft) = t.composite_type.inner {
+								func_types.insert(next_type_idx, ft);
+							}
+							next_type_idx += 1;
 						}
 					}
 				}
@@ -114,16 +125,9 @@ fn _validate_wasm(wasm_bytes: &[u8], expect_json: &str) -> Result<(), WatParserE
 		match ex.kind {
 			wasmparser::ExternalKind::Func => {
 				let fti = func_type_indexes[usize::try_from(ex.index - (imported_func_count as u32)).unwrap()];
-				let ft = &func_types[usize::try_from(fti).unwrap()];
-				let mut r: Option<wasmparser::ValType> = None;
-				if ft.results().len() > 0 {
-					r = Some(ft.results()[0]);
+				if let Some(fi) = func_info_at(&func_types, fti) {
+					exported_functions.insert(ex.name, fi);
 				}
-				let fi = FuncInfo {
-					params: ft.params(),
-					ret: r,
-				};
-				exported_functions.insert(ex.name, fi);
 			}
 			wasmparser::ExternalKind::Memory => {
 				if ex.name == "memory" {
@@ -137,16 +141,9 @@ fn _validate_wasm(wasm_bytes: &[u8], expect_json: &str) -> Result<(), WatParserE
 	for imp in imports {
 		match imp.ty {
 			TypeRef::Func(type_idx) => {
-				let ft = &func_types[usize::try_from(type_idx).unwrap()];
-				let mut r: Option<wasmparser::ValType> = None;
-				if ft.results().len() > 0 {
-					r = Some(ft.results()[0]);
+				if let Some(fi) = func_info_at(&func_types, type_idx) {
+					imported_functions.insert(imp.name, fi);
 				}
-				let fi = FuncInfo {
-					params: ft.params(),
-					ret: r,
-				};
-				imported_functions.insert(imp.name, fi);
 			},
 			// TypeRef::Memory(memory_type) => todo!(),
 			_ => {},
