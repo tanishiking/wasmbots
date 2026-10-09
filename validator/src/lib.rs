@@ -70,7 +70,11 @@ fn _validate_wasm(wasm_bytes: &[u8], expect_json: &str) -> Result<(), WatParserE
 			wasmparser::Payload::ImportSection(reader) => {
 				for imp in reader {
 					if let Ok(imp) = imp {
-						imports.push(imp);
+						for item in imp.into_iter() {
+							if let Ok((_offset, import)) = item {
+								imports.push(import);
+							}
+						}
 					}
 				}
 			},
